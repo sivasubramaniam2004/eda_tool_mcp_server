@@ -1,9 +1,23 @@
 from enum import Enum
 import logging
-from typing import Optional, List
+import sys
+from io import StringIO
+from typing import Optional, List, Any, Tuple, Union
 
-## import mcp server
+from pydantic import BaseModel, AnyUrl
+import pandas as pd
+import numpy as np
+import scipy
+import sklearn
+from starlette.applications import Starlette
+from starlette.routing import Mount, Route
+import statsmodels.api as sm
+from starlette.requests import Request
+
+from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
+from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
 from mcp.types import (
     TextContent,
     Tool,
@@ -15,26 +29,16 @@ from mcp.types import (
     GetPromptResult,
     PromptMessage,
 )
-from mcp.server import NotificationOptions, Server
 from mcp.shared.exceptions import McpError
-from pydantic import AnyUrl
-import mcp.server.stdio
-from pydantic import BaseModel
+import uvicorn
 
-## import common data analysis libraries
-import pandas as pd
-import numpy as np
-import scipy
-import sklearn
-import statsmodels.api as sm
-from io import StringIO
-import sys
+# Configure logging
+target = "data-exploration"
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(target)
+logger.info("Initializing Data Exploration Server")
 
-
-logger = logging.getLogger(__name__)
-logger.info("Starting mini data science exploration server")
-
-### Prompt templates
+# Prompt templates and arguments
 class DataExplorationPrompts(str, Enum):
     EXPLORE_DATA = "explore-data"
 
@@ -108,12 +112,10 @@ Remember to prioritize stability and manageability in your analysis. If at any p
 Please begin your analysis by loading the CSV file and providing an initial exploration of the dataset.
 """
 
-
-### Data Exploration Tools Description & Schema
+# Tool identifiers
 class DataExplorationTools(str, Enum):
     LOAD_CSV = "load_csv"
     RUN_SCRIPT = "run_script"
-
 
 LOAD_CSV_TOOL_DESCRIPTION = """
 Load CSV File Tool
@@ -125,11 +127,10 @@ Usage Notes:
 	•	If a df_name is not provided, the tool will automatically assign names sequentially as df_1, df_2, and so on.
 """
 
+# Input schemas\ class LoadCsv(BaseModel):
 class LoadCsv(BaseModel):
     csv_path: str
     df_name: Optional[str] = None
-
-
 
 RUN_SCRIPT_TOOL_DESCRIPTION = """
 Python Script Execution Tool
@@ -150,102 +151,96 @@ class RunScript(BaseModel):
     script: str
     save_to_memory: Optional[List[str]] = None
 
-
-### Python (Pandas, NumPy, SciPy) Script Runner
+# Script runner
 class ScriptRunner:
     def __init__(self):
-        self.data = {}
+        self.data: dict[str, pd.DataFrame] = {}
         self.df_count = 0
-        self.notes: list[str] = []
+        self.notes: List[str] = []
 
-    def load_csv(self, csv_path: str, df_name:str = None):
+    def load_csv(self, csv_path: str, df_name: Optional[str] = None) -> List[TextContent]:
         self.df_count += 1
-        if not df_name:
-            df_name = f"df_{self.df_count}"
+        name = df_name or f"df_{self.df_count}"
         try:
-            self.data[df_name] = pd.read_csv(csv_path)
-            self.notes.append(f"Successfully loaded CSV into dataframe '{df_name}'")
-            return [
-                TextContent(type="text", text=f"Successfully loaded CSV into dataframe '{df_name}'")
-            ]
+            df = pd.read_csv(csv_path)
+            self.data[name] = df
+            msg = f"Loaded CSV into '{name}' ({df.shape[0]} rows, {df.shape[1]} cols)"
+            self.notes.append(msg)
+            return [TextContent(type="text", text=msg)]
         except Exception as e:
-            raise McpError(
-                INTERNAL_ERROR, f"Error loading CSV: {str(e)}"
-            ) from e
+            logger.error(f"Error loading CSV: {e}")
+            raise McpError(INTERNAL_ERROR, f"Error loading CSV: {e}")
 
-    def safe_eval(self, script: str, save_to_memory: Optional[List[str]] = None):
-        """safely run a script, return the result if valid, otherwise return the error message"""
-        # first extract dataframes from the self.data
-        local_dict = {
-            **{df_name: df for df_name, df in self.data.items()},
-        }
-        # execute the script and return the result and if there is error, return the error message
+    def safe_eval(self, script: str, save_to_memory: Optional[List[str]] = None) -> List[TextContent]:
+        local_vars = {**self.data}
+        stdout = StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = stdout
+        self.notes.append(f"Executing script:\n{script}")
         try:
-            stdout_capture = StringIO()
-            old_stdout = sys.stdout
-            sys.stdout = stdout_capture
-            self.notes.append(f"Running script: \n{script}")
-            # pylint: disable=exec-used
-            exec(script, \
-                {'pd': pd, 'np': np, 'scipy': scipy, 'sklearn': sklearn, 'statsmodels': sm}, \
-                local_dict)
-            std_out_script = stdout_capture.getvalue()
+            exec(
+                script,
+                {
+                    'pd': pd,
+                    'np': np,
+                    'scipy': scipy,
+                    'sklearn': sklearn,
+                    'sm': sm,
+                },
+                local_vars,
+            )
         except Exception as e:
-            raise McpError(INTERNAL_ERROR, f"Error running script: {str(e)}") from e
-
-        # check if the result is a dataframe
+            sys.stdout = old_stdout
+            logger.error(f"Script error: {e}")
+            raise McpError(INTERNAL_ERROR, f"Script error: {e}")
+        sys.stdout = old_stdout
+        output = stdout.getvalue().strip() or "<no output>"
         if save_to_memory:
-            for df_name in save_to_memory:
-                self.notes.append(f"Saving dataframe '{df_name}' to memory")
-                self.data[df_name] = local_dict.get(df_name)
+            for name in save_to_memory:
+                df = local_vars.get(name)
+                if isinstance(df, pd.DataFrame):
+                    self.data[name] = df
+                    self.notes.append(f"Saved DataFrame '{name}' to memory")
+        self.notes.append(f"Script output: {output}")
+        return [TextContent(type="text", text=output)]
 
-        output = std_out_script if std_out_script else "No output"
-        self.notes.append(f"Result: {output}")
-        return [
-            TextContent(type="text", text=f"print out result: {output}")
-        ]
-
-### MCP Server Definition
-async def main():
-    script_runner = ScriptRunner()
-    server = Server("local-mini-ds")
+# Server factory
+def create_data_exploration_server() -> Tuple[Server, InitializationOptions]:
+    runner = ScriptRunner()
+    server = Server("data-exploration-server")
 
     @server.list_resources()
-    async def handle_list_resources() -> list[Resource]:
-        logger.debug("Handling list_resources request")
+    async def list_resources() -> List[Resource]:
         return [
             Resource(
                 uri="data-exploration://notes",
-                name="Data Exploration Notes",
-                description="Notes generated by the data exploration server",
+                name="Exploration Notes",
+                description="Accumulated notes from data exploration",
                 mimeType="text/plain",
             )
         ]
 
     @server.read_resource()
-    async def handle_read_resource(uri: AnyUrl) -> str:
-        logger.debug(f"Handling read_resource request for URI: {uri}")
-        if uri == "data-exploration://notes":
-            return "\n".join(script_runner.notes)
-        else:
-            raise ValueError(f"Unknown resource: {uri}")
+    async def read_resource(uri: AnyUrl) -> str:
+        if str(uri) == "data-exploration://notes":
+            return "\n".join(runner.notes)
+        raise ValueError(f"Unknown resource: {uri}")
 
     @server.list_prompts()
-    async def handle_list_prompts() -> list[Prompt]:
-        logger.debug("Handling list_prompts request")
+    async def list_prompts() -> List[Prompt]:
         return [
             Prompt(
                 name=DataExplorationPrompts.EXPLORE_DATA,
-                description="A prompt to explore a csv dataset as a data scientist",
+                description="Explore a CSV dataset",
                 arguments=[
                     PromptArgument(
                         name=PromptArgs.CSV_PATH,
-                        description="The path to the csv file",
+                        description="Path to the CSV file",
                         required=True,
                     ),
                     PromptArgument(
                         name=PromptArgs.TOPIC,
-                        description="The topic the data exploration need to focus on",
+                        description="Focus topic",
                         required=False,
                     ),
                 ],
@@ -253,75 +248,113 @@ async def main():
         ]
 
     @server.get_prompt()
-    async def handle_get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
-        logger.debug(f"Handling get_prompt request for {name} with args {arguments}")
+    async def get_prompt(name: str, arguments: Optional[dict[str, Any]]) -> GetPromptResult:
         if name != DataExplorationPrompts.EXPLORE_DATA:
-            logger.error(f"Unknown prompt: {name}")
             raise ValueError(f"Unknown prompt: {name}")
-
         if not arguments or PromptArgs.CSV_PATH not in arguments:
-            logger.error("Missing required argument: csv_path")
             raise ValueError("Missing required argument: csv_path")
-
-        csv_path = arguments[PromptArgs.CSV_PATH]
-        topic = arguments.get(PromptArgs.TOPIC)
-        prompt = PROMPT_TEMPLATE.format(csv_path=csv_path, topic=topic)
-
-        logger.debug(f"Generated prompt template for csv_path: {csv_path} and topic: {topic}")
+        prompt_text = PROMPT_TEMPLATE.format(
+            csv_path=arguments[PromptArgs.CSV_PATH],
+            topic=arguments.get(PromptArgs.TOPIC, ""),
+        )
         return GetPromptResult(
-            description=f"Data exploration template for {topic}",
+            description="Data exploration template",
             messages=[
                 PromptMessage(
                     role="user",
-                    content=TextContent(type="text", text=prompt.strip()),
+                    content=TextContent(type="text", text=prompt_text.strip()),
                 )
             ],
         )
 
     @server.list_tools()
-    async def handle_list_tools() -> list[Tool]:
-        logger.debug("Handling list_tools request")
+    async def list_tools() -> List[Tool]:
         return [
             Tool(
-                name = DataExplorationTools.LOAD_CSV,
-                description = LOAD_CSV_TOOL_DESCRIPTION,
-                inputSchema = LoadCsv.model_json_schema(),
+                name=DataExplorationTools.LOAD_CSV.value,
+                description="Load a CSV into memory",
+                inputSchema=LoadCsv.model_json_schema(),
             ),
             Tool(
-                name=DataExplorationTools.RUN_SCRIPT,
-                description=RUN_SCRIPT_TOOL_DESCRIPTION,
+                name=DataExplorationTools.RUN_SCRIPT.value,
+                description="Execute Python code safely",
                 inputSchema=RunScript.model_json_schema(),
-            )
+            ),
         ]
 
     @server.call_tool()
-    async def handle_call_tool(
-        name: str, arguments: dict | None
-    ) -> list[TextContent | EmbeddedResource]:
-        logger.debug(f"Handling call_tool request for {name} with args {arguments}")
-        if name == DataExplorationTools.LOAD_CSV:
-            csv_path = arguments.get("csv_path")
-            df_name = arguments.get("df_name")
-            return script_runner.load_csv(csv_path, df_name)
-        elif name == DataExplorationTools.RUN_SCRIPT:
-            script = arguments.get("script")
-            df_name = arguments.get("df_name")
-            return script_runner.safe_eval(script, df_name)
-        else:
-            raise McpError(INTERNAL_ERROR, f"Unknown tool: {name}")
-        return None
+    async def call_tool(name: str, arguments: dict[str, Any]) -> List[Union[TextContent, EmbeddedResource]]:
+        if name == DataExplorationTools.LOAD_CSV.value:
+            return runner.load_csv(
+                arguments.get("csv_path"),
+                arguments.get("df_name"),
+            )
+        if name == DataExplorationTools.RUN_SCRIPT.value:
+            return runner.safe_eval(
+                arguments.get("script"),
+                arguments.get("save_to_memory"),
+            )
+        raise McpError(INTERNAL_ERROR, f"Unknown tool: {name}")
 
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        logger.debug("Server running with stdio transport")
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="data-exploration-server",
-                server_version="0.1.0",
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
-        )
+    init_opts = InitializationOptions(
+        server_name="data-exploration-server",
+        server_version="0.1.0",
+        capabilities=server.get_capabilities(
+            notification_options=NotificationOptions(),
+            experimental_capabilities={},
+        ),
+    )
+    return server, init_opts
+
+# STDIO transport runner
+def run_stdio_transport() -> None:
+    server, init_opts = create_data_exploration_server()
+    logger.info("Starting STDIO transport")
+    import asyncio
+
+    async def _stdio_runner():
+        async with stdio_server() as (r, w):
+            await server.run(r, w, init_opts)
+
+    asyncio.run(_stdio_runner())
+
+# SSE transport runner
+def run_sse_transport(host: str = "127.0.0.1", port: int = 8000) -> None:
+    server, init_opts = create_data_exploration_server()
+    sse = SseServerTransport("/messages/")
+
+    async def sse_endpoint(request: Request):
+        async with sse.connect_sse(request.scope, request.receive, request._send) as (r, w):
+            await server.run(r, w, init_opts)
+
+    app = Starlette(
+        debug=False,
+        routes=[
+            Route("/sse", endpoint=sse_endpoint),
+            Mount("/messages/", app=sse.handle_post_message),
+        ],
+    )
+
+    logger.info(f"Starting SSE transport at http://{host}:{port}/sse")
+    # Now uvicorn is guaranteed to be defined
+    uvicorn.run(app, host=host, port=port)
+
+# CLI entrypoint
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Data Exploration MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "both"],
+        default="stdio",
+        help="Transport protocol(s) to run",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="SSE host")
+    parser.add_argument("--port", type=int, default=8000, help="SSE port")
+    args = parser.parse_args()
+
+    if args.transport in ("stdio", "both"):
+        run_stdio_transport()
+    if args.transport in ("sse", "both"):
+        run_sse_transport(host=args.host, port=args.port)

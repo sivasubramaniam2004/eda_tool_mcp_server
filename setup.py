@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 import re
 import time
+
 def run_command(cmd, check=True):
     """Run a shell command and return output."""
     try:
@@ -95,7 +96,7 @@ def build_package():
         sys.exit(f"Build failed with error code {process.returncode}")
 
     # Extract wheel file path from the combined output
-    match = re.findall(r'dist/[^\s]+\.whl', output.strip())
+    match = re.findall(r'dist[\\/][^\s]+\.whl', output.strip())
     whl_file = match[-1] if match else None
     if not whl_file:
         sys.exit("Failed to find wheel file in build output")
