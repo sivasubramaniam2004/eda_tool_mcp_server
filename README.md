@@ -12,7 +12,7 @@ This repository provides a server setup for the EDA (Exploratory Data Analysis) 
 
 ---
 
-## 🚀 Setup Instructions (Windows)
+## Setup Instructions (Windows)
 
 ### 1. Clone the Repository
 
