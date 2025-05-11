@@ -12,7 +12,7 @@ This repository provides a server setup for the EDA (Exploratory Data Analysis) 
 
 ---
 
-## Setup Instructions (Windows)
+## Setup Instructions 
 
 ### 1. Clone the Repository
 
@@ -29,10 +29,19 @@ cd eda_tool_mcp_server
 ### Install Dependencies
 Run the setup script to install required packages:
 
+### 1. On Windows
 ``` bash
 python setup.py
 ```
 
+### 2. On macOS
+
+ Change the 98th line of setup.py with 
+
+``` python
+match = re.findall(r'dist/[^\s]+\.whl', output.strip())
+```
+and 
 ``` bash
 cd mcp_server_ds
 ```
