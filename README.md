@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # EDA Tool MCP Server (with SSE Endpoint)
 
 This repository provides a server setup for the EDA (Exploratory Data Analysis) tool that supports **Server-Sent Events (SSE)** via the `/sse` endpoint. It allows clients to connect and receive real-time data streams over HTTP.
@@ -42,7 +41,3 @@ cd mcp_server_ds
 ``` bash
 python server.py --transport sse --host 127.0.0.1 --port 8000
 ```
-
-=======
-# eda_tool_mcp_server
->>>>>>> 4f3a5b1df70aaa03d5c9731751e836c2c6cf5b39
