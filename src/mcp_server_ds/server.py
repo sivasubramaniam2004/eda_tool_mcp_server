@@ -1,23 +1,9 @@
 from enum import Enum
 import logging
-import sys
-from io import StringIO
 from typing import Optional, List, Any, Tuple, Union
 
-from pydantic import BaseModel, AnyUrl
-import pandas as pd
-import numpy as np
-import scipy
-import sklearn
-from starlette.applications import Starlette
-from starlette.routing import Mount, Route
-import statsmodels.api as sm
-from starlette.requests import Request
-
-from mcp.server import Server, NotificationOptions
+## import mcp server
 from mcp.server.models import InitializationOptions
-from mcp.server.stdio import stdio_server
-from mcp.server.sse import SseServerTransport
 from mcp.types import (
     TextContent,
     Tool,
@@ -29,7 +15,27 @@ from mcp.types import (
     GetPromptResult,
     PromptMessage,
 )
+from mcp.server import Server, NotificationOptions
 from mcp.shared.exceptions import McpError
+from pydantic import BaseModel, AnyUrl
+
+## import common data analysis libraries
+import pandas as pd
+import numpy as np
+import scipy
+import sklearn
+from io import StringIO
+import sys
+
+## Our imports
+from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
+
+from starlette.applications import Starlette
+from starlette.routing import Mount, Route
+import statsmodels.api as sm
+from starlette.requests import Request
+
 import uvicorn
 
 # Configure logging
@@ -204,7 +210,7 @@ class ScriptRunner:
         self.notes.append(f"Script output: {output}")
         return [TextContent(type="text", text=output)]
 
-# Server factory
+### MCP Server Definition
 def create_data_exploration_server() -> Tuple[Server, InitializationOptions]:
     runner = ScriptRunner()
     server = Server("data-exploration-server")
@@ -336,7 +342,7 @@ def run_sse_transport(host: str = "127.0.0.1", port: int = 8000) -> None:
     )
 
     logger.info(f"Starting SSE transport at http://{host}:{port}/sse")
-    # Now uvicorn is guaranteed to be defined
+    # Now uvicorn is guaranteed to be defined 
     uvicorn.run(app, host=host, port=port)
 
 # CLI entrypoint
