@@ -12,9 +12,6 @@ dependencies = [
  "scipy>=1.14.1",
  "statsmodels>=0.14.4",
 ]
-[[project.authors]]
-name = "Xing Xing"
-email = "xingxingumich@gmail.com"
 
 [build-system]
 requires = [ "hatchling",]
