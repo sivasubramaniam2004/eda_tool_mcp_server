@@ -342,7 +342,7 @@ def run_sse_transport(host: str = "127.0.0.1", port: int = 8000) -> None:
     )
 
     logger.info(f"Starting SSE transport at http://{host}:{port}/sse")
-    # Now uvicorn is guaranteed to be defined 
+    # Now uvicorn is guaranteed to be defined
     uvicorn.run(app, host=host, port=port)
 
 # CLI entrypoint
