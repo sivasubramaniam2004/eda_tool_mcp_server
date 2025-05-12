@@ -1,6 +1,0 @@
-pandas
-mcp
-scipy
-numpy
-statsmodels
-scikit-learn
