@@ -1,51 +1,58 @@
 #!/usr/bin/env python3
-"""setup script for MCP server data science environment."""
+"""Cross-platform setup script for MCP server data science environment."""
 
 import subprocess
 import sys
 import re
-from pathlib import Path
 import shutil
+from pathlib import Path
+import platform
+import os
 
 IS_INTERACTIVE = "--interactive" in sys.argv
+IS_WINDOWS = platform.system().lower() == "windows"
+VENV_PATH = Path(".venv")
+VENV_ACTIVATE = (
+    VENV_PATH / "Scripts" / "activate.bat" if IS_WINDOWS else VENV_PATH / "bin" / "activate"
+)
+
 
 def run_command(cmd, check=True):
-    """Run a shell command and return output."""
+    """Run shell command and return stdout."""
     try:
         result = subprocess.run(cmd, shell=True, check=check, capture_output=True, text=True)
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        print(f"Error running command '{cmd}': {e}")
+        print(f"❌ Error running command '{cmd}': {e}")
         return None
 
 
 def ask_permission(question):
-    """Ask user for permission only if in interactive mode."""
+    """Prompt user for y/n only in interactive mode."""
     if not IS_INTERACTIVE:
-        return True  # Always proceed in non-interactive mode
-
+        return True
     while True:
-        response = input(f"{question} (y/n): ").lower()
-        if response in ['y', 'yes']:
+        resp = input(f"{question} (y/n): ").lower()
+        if resp in ['y', 'yes']:
             return True
-        if response in ['n', 'no']:
+        elif resp in ['n', 'no']:
             return False
         print("Please answer 'y' or 'n'")
 
+
 def check_uv():
-    """Ensure uv is installed."""
+    """Ensure 'uv' is installed."""
     print("🔍 Checking for 'uv' installation...")
-    uv_path = shutil.which("uv")
-    if uv_path:
-        print(f"✅ 'uv' is installed at: {uv_path}")
+    if shutil.which("uv"):
+        print("✅ 'uv' is installed.")
         return
 
     print("❗ 'uv' not found.")
     if ask_permission("Would you like to install 'uv'?"):
-        print("⬇️ Installing uv...")
-        result = run_command("curl -LsSf https://astral.sh/uv/install.sh | sh", check=False)
+        install_cmd = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+        result = run_command(install_cmd, check=False)
         if result is not None:
-            print("✅ uv installed successfully.")
+            print("✅ 'uv' installed successfully.")
         else:
             sys.exit("❌ Failed to install 'uv'. Exiting.")
     else:
@@ -55,31 +62,34 @@ def check_uv():
 def setup_venv():
     """Create virtual environment if not present."""
     print("🔍 Checking for virtual environment...")
-    if Path(".venv").exists():
+    if VENV_PATH.exists():
         print("✅ Virtual environment already exists.")
         return
 
     if ask_permission("Virtual environment not found. Create one?"):
-        print("Creating virtual environment using uv...")
+        print("🐍 Creating virtual environment using uv...")
         result = run_command("uv venv")
         if result is not None:
-            print("✅ Virtual environment created successfully.")
+            print("✅ Virtual environment created.")
         else:
             sys.exit("❌ Failed to create virtual environment. Exiting.")
     else:
-        sys.exit("❌ Virtual environment is required to continue. Exiting.")
+        sys.exit("❌ Virtual environment is required. Exiting.")
 
 
 def sync_dependencies():
     """Sync dependencies from pyproject.toml."""
-    print("Syncing dependencies from pyproject.toml...")
-    run_command("uv sync")
-    print("Dependencies synced successfully")
+    print("🔄 Syncing dependencies with uv...")
+    result = run_command("uv sync")
+    if result is not None:
+        print("✅ Dependencies synced.")
+    else:
+        sys.exit("❌ Dependency sync failed. Exiting.")
 
 
 def build_package():
-    """Build project and return wheel file path."""
-    print("Building package with uv build...")
+    """Build project and return path to .whl file."""
+    print("📦 Building package...")
     process = subprocess.Popen(
         "uv build",
         shell=True,
@@ -91,25 +101,37 @@ def build_package():
     output = stdout + stderr
 
     if process.returncode != 0:
-        sys.exit(f"Build failed with error code {process.returncode}:\n{stderr}")
+        sys.exit(f"❌ Build failed:\n{stderr}")
 
     matches = re.findall(r'dist[\\/][^\s]+\.whl', output)
-    whl_file = matches[-1] if matches else None
-    if not whl_file:
-        sys.exit("Failed to find wheel file in build output")
-
-    path = Path(whl_file).absolute()
-    print(f"Built wheel at {path}")
-    return str(path)
+    if not matches:
+        sys.exit("❌ Failed to find wheel file in output.")
+    whl_path = Path(matches[-1]).resolve()
+    print(f"✅ Built wheel: {whl_path}")
+    return str(whl_path)
 
 
 def show_activation_hint():
-    """Print virtual environment activation instructions."""
-    print("\nTo activate your virtual environment manually:")
-    if sys.platform.startswith("win"):
+    """Print instructions to activate venv."""
+    print("\n📌 To activate your virtual environment manually:")
+    if IS_WINDOWS:
         print(r".venv\Scripts\activate")
     else:
         print("source .venv/bin/activate")
+
+
+def activate_and_run_server():
+    """Activate venv and run server."""
+    print("🚀 Starting server...")
+
+    # Build command to activate and run server
+    activation_cmd = (
+        f"{VENV_PATH}\\Scripts\\activate && cd src\\mcp_server_ds && python server.py --transport sse --host 127.0.0.1 --port 8000"
+        if IS_WINDOWS else
+        f"source {VENV_PATH}/bin/activate && cd src/mcp_server_ds && python server.py --transport sse --host 127.0.0.1 --port 8000"
+    )
+
+    subprocess.run(activation_cmd, shell=True)
 
 
 def main():
@@ -121,8 +143,11 @@ def main():
     wheel_path = build_package()
 
     print("\n✅ Setup completed successfully.")
-    print(f"✅ Wheel file created at: {wheel_path}")
+    print(f"✅ Wheel file created: {wheel_path}")
     show_activation_hint()
+
+    if ask_permission("\n🚀 Do you want to start the server now at http://127.0.0.1:8000/sse ?"):
+        activate_and_run_server()
 
 
 if __name__ == "__main__":
