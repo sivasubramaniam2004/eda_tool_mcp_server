@@ -5,7 +5,6 @@ import subprocess
 import sys
 import re
 from pathlib import Path
-import platform
 import shutil
 
 IS_INTERACTIVE = "--interactive" in sys.argv
